@@ -1,0 +1,23 @@
+# --- Never commit real data: the workbook holds participant PII ---------
+PMIS Data.xlsx
+*.xlsx
+!PMIS Data.template.xlsx
+~$*
+
+# --- App-managed dependency folder (installed at runtime) ---------------
+libs/
+
+# --- Python ------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# --- Packaging / local noise -------------------------------------------
+*.zip
+dist/
+build/
+*.spec
+.DS_Store
+Thumbs.db
