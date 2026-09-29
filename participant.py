@@ -569,6 +569,14 @@ class MemberForm(GeoBot):
             col = cols.get(key)
             return row[col] if col and col in row else ""
 
+        def first_of(*keys):
+            """First of these columns that actually holds something."""
+            for k in keys:
+                v = val(k)
+                if not _empty(v):
+                    return v
+            return ""
+
         def do(label, ok, value):
             self._report(label, ok, value)
             if not ok and not _empty(value):
@@ -588,8 +596,12 @@ class MemberForm(GeoBot):
         do("Contact person", self.type_text(F["relative_name"],
                                             val("relative_name")),
            val("relative_name"))
-        do("Category", self.pick(F["category"], val("category")),
-           val("category"))
+        caste = first_of("caste", "category")
+        if caste and str(caste).strip().upper() not in {
+                o.upper() for o in config.PARTICIPANT_CASTE_OPTIONS}:
+            self.log(f"      note: caste '{caste}' is not one of "
+                     f"{', '.join(config.PARTICIPANT_CASTE_OPTIONS)}")
+        do("Caste", self.pick(F["category"], caste), caste)
         do("Ethnicity", self.pick(F["ethnicity"], val("ethnicity")),
            val("ethnicity"))
 
@@ -772,17 +784,26 @@ def run_participant_entry(driver, excel_path, base_url, username, password,
             log(f"Excel row {excel_row}  [FPO {coop_id}]  {row[name_col]}")
             failed = bot.fill_member(row)
 
+            # The row is marked as soon as every field went in - before any
+            # save - so a manually-saved record is not offered again.
+            if not failed:
+                mark_updated(excel_path, sheet, excel_row, log)
+                log(f"  marked row {excel_row} "
+                    f"'{config.PARTICIPANT_DONE_MARKER}' (fields complete)")
+
             if not auto_save:
                 log("")
                 log("=" * 60)
                 if failed:
                     log(f"Filled, with {len(failed)} field(s) NOT set: "
                         f"{', '.join(failed)}")
+                    log("Row NOT marked - fix the data and run again.")
                 else:
                     log("All mapped fields were set successfully.")
-                log("NOT SAVED - Auto Save is off. Review the form in the "
-                    "browser; nothing was submitted and the sheet was not "
-                    "marked.")
+                    log(f"Row {excel_row} is marked "
+                        f"'{config.PARTICIPANT_DONE_MARKER}' and will be "
+                        f"skipped next run - click Save on the form yourself.")
+                log("NOT SAVED - Auto Save is off. Nothing was submitted.")
                 log("=" * 60)
                 return 1
 
@@ -807,10 +828,8 @@ def run_participant_entry(driver, excel_path, base_url, username, password,
                 log("=" * 60)
                 return saved
 
-            mark_updated(excel_path, sheet, excel_row, log)
             saved += 1
-            log(f"  saved ({message}) - marked row {excel_row} "
-                f"'{config.PARTICIPANT_DONE_MARKER}'")
+            log(f"  saved ({message})")
 
     except StopRequested:
         log("")

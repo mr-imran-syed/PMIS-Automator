@@ -137,7 +137,10 @@ PARTICIPANT_FORM_COLUMNS = {
     "age":           "age",
     "relation":      "contact_person_relation",
     "relative_name": "contact_person_name",
-    "category":      "category",       # -> form's Category select
+    # The form's Category dropdown is the caste. Read "caste" first and fall
+    # back to "category" - the PMIS export fills one or the other.
+    "caste":         "caste",
+    "category":      "category",
     "ethnicity":     "ethnicity",      # -> form's EthnicityId select
     "contact_no":    "contact_no",
     "adhar":         "adhar_card",
@@ -145,6 +148,10 @@ PARTICIPANT_FORM_COLUMNS = {
     "member_type":   "member_type_name",
     "shg_code":      "shg_code",       # blank => Case 1 (not an SHG member)
 }
+
+# Valid values for the form's Category (caste) dropdown, read from the live
+# member form. Anything else is flagged in the log.
+PARTICIPANT_CASTE_OPTIONS = ["SC", "ST", "OBC", "GENERAL", "RELIGIOUS MINORITY"]
 
 # Auto-calculated column the app maintains in the sheet, derived from `age`
 # (the form's YearOfBirthAttr takes a full dd-mm-yyyy date).

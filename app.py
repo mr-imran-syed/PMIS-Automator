@@ -662,8 +662,17 @@ class App(tk.Tk):
         head.columnconfigure(0, weight=1)
         tk.Label(head, text="Log", bg=CARD, fg=TEXT,
                  font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w")
+        # Runs jump to this tab, so Stop has to be reachable from here too.
+        self.log_stop_btn = tk.Button(
+            head, text="Stop", command=self._stop, state="disabled",
+            font=("Segoe UI", 10, "bold"), relief="flat",
+            bg="#d1d5db", fg="#374151", padx=14, pady=3)
+        self.log_stop_btn.grid(row=0, column=1, padx=(0, 8))
+        ToolTip(self.log_stop_btn,
+                "Stop after the current row (same as Stop on the Setup page)")
+
         copy_btn = ttk.Button(head, text="Copy Log", command=self._copy_log)
-        copy_btn.grid(row=0, column=1)
+        copy_btn.grid(row=0, column=2)
         ToolTip(copy_btn, "Copy the entire current log to the clipboard")
 
         wrap = tk.Frame(card, bg=CARD)
@@ -938,6 +947,7 @@ class App(tk.Tk):
         self._set_status("running")
         self.start_btn.config(text="Stop", command=self._stop,
                               state="normal", bg=ORANGE, fg="white")
+        self.log_stop_btn.config(state="normal", bg=ORANGE, fg="white")
         for w in (self.train_rb, self.live_rb, self.data_cb, self.open_btn,
                   self.user_entry, self.pw_entry):
             try:
@@ -948,6 +958,8 @@ class App(tk.Tk):
     def _leave_running_state(self):
         self.running = False
         self.start_btn.config(text="Start", command=self._start)
+        self.log_stop_btn.config(text="Stop", state="disabled",
+                                 bg="#d1d5db", fg="#374151")
         for w in (self.train_rb, self.live_rb, self.open_btn,
                   self.user_entry, self.pw_entry):
             try:
@@ -963,6 +975,11 @@ class App(tk.Tk):
             return
         self.stop_event.set()
         self._set_status("stopping")
+        for btn in (self.start_btn, self.log_stop_btn):
+            try:
+                btn.config(text="Stopping...", state="disabled")
+            except Exception:
+                pass
         self.log("Stop requested - finishing the current row.")
 
     def _run_worker(self, dtype, spec, env, user, pw):
