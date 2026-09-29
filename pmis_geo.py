@@ -139,6 +139,26 @@ class GeoBot:
                 "Login failed - check the username/password and environment.")
         self.log(f"Logged in as {username}")
 
+    def ensure_logged_in(self, username, password, base_url):
+        """Sign in only when the session is not already authenticated.
+
+        Lets a reused browser skip the whole sign-in round trip. Anything
+        opened afterwards still calls reauth_if_signed_out(), so a session
+        that has actually expired still recovers.
+        """
+        self._creds = (username, password)
+        self._base_url = base_url
+        try:
+            current = self.driver.current_url or ""
+        except Exception:
+            current = ""
+        if base_url.rstrip("/") not in current:
+            self.driver.get(base_url)
+        if self.is_signin_page():
+            self.login(username, password, base_url)
+        else:
+            self.log(f"Already signed in - reusing the session ({username}).")
+
     def reauth_if_signed_out(self):
         """If the current page bounced to sign-in, sign in again.
 
@@ -205,12 +225,18 @@ class GeoBot:
         return Select(self.driver.find_element(By.XPATH, select_xpath))
 
     def find_and_select(self, select_xpath, name, settle_timeout=10,
-                        retry=6, poll=0.3):
+                        retry=6, poll=0.3, lead=None, settle=None):
         """Select the option matching `name` (trimmed, case-insensitive); True on
         success, False only if it never appears. Settles the list, then retries
         for `retry`s to tolerate server lag on a just-created item."""
         target = str(name).strip().casefold()
-        self.wait_options_stable(select_xpath, timeout=settle_timeout)
+        stable_kw = {}
+        if lead is not None:
+            stable_kw["lead"] = lead
+        if settle is not None:
+            stable_kw["settle"] = settle
+        self.wait_options_stable(select_xpath, timeout=settle_timeout,
+                                 **stable_kw)
         deadline = time.time() + retry
         while True:
             try:
@@ -405,7 +431,7 @@ class GeoBot:
         self._sheet = sheet
         self._status_col = status_col
 
-        self.login(username, password, base_url)
+        self.ensure_logged_in(username, password, base_url)
         self.goto_geolocation(base_url)
 
         data = self.load_geo_data(excel_path, sheet, status_col)

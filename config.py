@@ -89,12 +89,15 @@ UPDATE_TYPES = {
         "required": ["State", "District", "Block", "GP", "Village"],
         "runner": "pmis_geo:run_geo",
     },
+    # Case 1 only for now (FOAB member, not SHG). Fills the member
+    # registration form and stops - it never submits.
     "Participant Master Data": {
         "sheet": "Participant Master Data",
         "status_col": "PMIS-Update",
-        "required": ["name", "district", "block", "grampanchayat",
-                     "village"],
-        "runner": None,   # not implemented in v0.1
+        "required": ["fpo_code", "name", "gender", "age", "province",
+                     "district", "block", "grampanchayat", "village"],
+        "runner": "participant:run_participant_entry",
+        "validator": "geo_check:validate_fpo_codes",
     },
     # Read-only check: verifies every unique location cascade in the
     # participant sheet actually exists on the Create Member page.
@@ -124,6 +127,109 @@ CREATE_DIRECT_PATH = CREATE_DIRECT_PATHS[0]   # kept for reference/logging
 # Column holding the FPO / cooperative id in the participant sheet.
 # Must be a whole number or the literal "NA".
 PARTICIPANT_FPO_COLUMN = "fpo_code"
+
+# --- Member registration form (Participant Master Data) -----------------
+# Logical field -> column in the Participant Master Data sheet. Rename-proof:
+# if the workbook headers change, update here only.
+PARTICIPANT_FORM_COLUMNS = {
+    "name":          "name",
+    "gender":        "gender",
+    "age":           "age",
+    "relation":      "contact_person_relation",
+    "relative_name": "contact_person_name",
+    "category":      "category",       # -> form's Category select
+    "ethnicity":     "ethnicity",      # -> form's EthnicityId select
+    "contact_no":    "contact_no",
+    "adhar":         "adhar_card",
+    "household":     "status_in_house_hold",
+    "member_type":   "member_type_name",
+    "shg_code":      "shg_code",       # blank => Case 1 (not an SHG member)
+}
+
+# Auto-calculated column the app maintains in the sheet, derived from `age`
+# (the form's YearOfBirthAttr takes a full dd-mm-yyyy date).
+PARTICIPANT_YOB_COLUMN = "year_of_birth"
+
+# The sheet has no status column populated, so registrations default to this.
+PARTICIPANT_DEFAULT_STATUS = "Active"
+
+# The SHG dropdown falls back to this when the sheet gives no SHG name/code.
+PARTICIPANT_SHG_NA = "NA"
+
+# Written into the status column once a participant has been saved to PMIS,
+# so an auto-save run can resume without re-entering anyone.
+PARTICIPANT_DONE_MARKER = "Updated"
+
+# Save & Continue on the member registration form.
+PARTICIPANT_SAVE_BUTTON = '//input[@id="SubmitContinueButton"]'
+
+# The thin loading bar that appears across the top of the page after saving.
+# Checked in order; the first one that is actually visible is used as the
+# "page is busy" indicator. If none match, the app logs the progress-bar-like
+# elements it found so the right selector can be added here.
+PARTICIPANT_PROGRESS_SELECTORS = [
+    "#nprogress", "#nprogress .bar",          # NProgress
+    ".pace.pace-active", ".pace-progress",    # Pace.js
+    ".turbolinks-progress-bar",
+    "#loading-bar", ".loading-bar",
+    "#progressBar", "#progressbar", "#progress-bar",
+    ".progress-bar-top", "#top-progress",
+]
+
+# How long to wait for the bar to show up after clicking Save, and how long to
+# pause once it finishes before touching the form.
+PARTICIPANT_PROGRESS_APPEAR = 1.5
+PARTICIPANT_PROGRESS_SETTLE = 2.0
+
+# After "Save & Continue" the page does a FULL refresh and the dropdowns are
+# repopulated by the new document. That is the trigger for the next entry:
+#   old DOM goes stale -> document.readyState complete -> dropdowns populated.
+PARTICIPANT_RELOAD_TIMEOUT = 45   # ceiling for the whole refresh
+PARTICIPANT_RELOAD_SETTLE = 0.6   # brief pause once the dropdowns are there
+
+# Confirmed against the live form: the site uses Pace.js. <body> carries
+# "pace-running" while a request is in flight and "pace-done" when idle -
+# that class is the authoritative "page is busy" signal.
+PARTICIPANT_BUSY_BODY_CLASS = "pace-running"
+
+# How long to wait for an AJAX-loaded cascade option to turn up. There is no
+# fixed settle: the option is taken the instant it appears.
+PARTICIPANT_GEO_TIMEOUT = 12
+
+# Speed tuning for the member form.
+# The geo cascade is re-checked per participant, but "Save & Continue" keeps
+# the previous location, so a level already showing the right value is left
+# alone instead of being re-selected (which would cost a full AJAX settle).
+PARTICIPANT_GEO_LEAD = 0.25      # AJAX head start before judging the options
+PARTICIPANT_GEO_SETTLE = 0.35    # options must be stable this long
+PARTICIPANT_GEO_RETRY = 3        # seconds to keep retrying a missing option
+PARTICIPANT_ALERT_TIMEOUT = 1.2  # the GP/Village alert appears fast or not at all
+
+# Stand-in for a blank/zero mobile number (matches the notebook's behaviour).
+PARTICIPANT_PLACEHOLDER_MOBILE = "9000000000"
+
+# Value-chain checkboxes, driven by columns in the participant sheet.
+# A cell of True/Yes/1 ticks the box; anything else (NULL/blank/False) clears it.
+#
+# CAUTION on `value_id`: the source notebook had BYP_vc() and goat_vc() BOTH
+# clicking //input[@value="8"] (a copy-paste bug), and clean_form() shows three
+# boxes: 8, 17 and 20 (20 = agri). So BYP=8 is known, Goat=17 is only inferred
+# by elimination. The app therefore matches the checkbox's visible LABEL first
+# and uses value_id only as a fallback - and logs which control it actually
+# used, so the mapping can be confirmed from the log.
+PARTICIPANT_VALUE_CHAINS = {
+    "BYP": {
+        "column": "BYP Value Chain",
+        "value_id": "8",
+        "labels": ["backyard poultry", "byp", "poultry"],
+    },
+    "Goat": {
+        "column": "Goat Value Chain",
+        "value_id": "17",
+        "labels": ["goat"],
+    },
+}
+
 
 # Maps the cascade levels on the PMIS page to the participant sheet's
 # column names. The workbook uses PMIS-style lowercase headers, so if those

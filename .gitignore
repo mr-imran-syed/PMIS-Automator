@@ -21,3 +21,4 @@ build/
 *.spec
 .DS_Store
 Thumbs.db
+settings.json

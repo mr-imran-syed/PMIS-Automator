@@ -16,6 +16,8 @@ from tkinter import ttk, messagebox
 import config
 import deps
 import data_file
+import settings
+import credstore
 from config import (APP_NAME, APP_FOOTER, ENVIRONMENTS, UPDATE_TYPES,
                     BROWSER_DOWNLOAD_URL)
 
@@ -32,6 +34,9 @@ YELLOW = "#c9960a"
 YELLOW_BG = "#fff3cd"
 ORANGE = "#c2551a"
 RED = "#c02626"
+NAV_BG = "#eef1f6"          # unselected nav button
+NAV_SEL_BG = "#dbe6fb"      # selected nav button
+NAV_SEL_FG = "#12305e"
 
 CAT_FRAMES = ["🐱", "😺", "😸", "😻", "😽"]
 HAND_FRAMES = ["✋", "🤚", "🖐️", "👋"]
@@ -196,12 +201,34 @@ class App(tk.Tk):
         self._build_status(root)
 
         # Side tabs: Setup (scrollable) | Log
-        self.tabs = ttk.Notebook(root, style="Side.TNotebook")
-        self.tabs.pack(fill="both", expand=True, pady=(10, 0))
-        self.setup_tab = tk.Frame(self.tabs, bg=BG)
-        self.log_tab = tk.Frame(self.tabs, bg=BG)
-        self.tabs.add(self.setup_tab, text="Setup")
-        self.tabs.add(self.log_tab, text="Log")
+        # Side nav. Buttons live in a FIXED-WIDTH sidebar and fill it, so the
+        # selected one can go bold without changing size (which is what a
+        # ttk.Notebook does by design).
+        nav_wrap = tk.Frame(root, bg=BG)
+        nav_wrap.pack(fill="both", expand=True, pady=(10, 0))
+
+        sidebar = tk.Frame(nav_wrap, bg=BG, width=118)
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)        # keep the width fixed
+
+        page_area = tk.Frame(nav_wrap, bg=BG)
+        page_area.pack(side="left", fill="both", expand=True, padx=(10, 0))
+
+        self._pages = {}
+        self._nav_buttons = {}
+        for key, label in (("setup", "Setup"), ("log", "Log"),
+                           ("settings", "Settings")):
+            self._pages[key] = tk.Frame(page_area, bg=BG)
+            btn = tk.Button(sidebar, text=label, relief="flat", bd=0,
+                            highlightthickness=0, cursor="hand2",
+                            activebackground=NAV_SEL_BG, pady=9,
+                            command=lambda k=key: self.show_page(k))
+            btn.pack(fill="x", pady=(0, 6))   # fill => identical widths
+            self._nav_buttons[key] = btn
+
+        self.setup_tab = self._pages["setup"]
+        self.log_tab = self._pages["log"]
+        self.settings_tab = self._pages["settings"]
 
         # Setup content scrolls, so small screens can reach every control.
         self.setup_scroll = ScrollFrame(self.setup_tab, bg=BG)
@@ -211,7 +238,27 @@ class App(tk.Tk):
         self._build_readiness(body)
         self._build_workflow(body)
         self._build_log(self.log_tab)
+        self._build_settings(self.settings_tab)
         self._build_footer(root)
+        self.show_page("setup")
+        self._load_credentials()
+
+    def show_page(self, key):
+        """Swap the visible page and restyle the nav.
+
+        Only weight and colour change between states - never geometry - so
+        nothing shifts when a different page is selected.
+        """
+        for frame in self._pages.values():
+            frame.pack_forget()
+        self._pages[key].pack(fill="both", expand=True)
+        self._current_page = key
+        for k, btn in self._nav_buttons.items():
+            chosen = (k == key)
+            btn.config(
+                font=("Segoe UI", 10, "bold" if chosen else "normal"),
+                bg=NAV_SEL_BG if chosen else NAV_BG,
+                fg=NAV_SEL_FG if chosen else TEXT)
 
     # ---- readiness ----
     def _build_readiness(self, root):
@@ -510,11 +557,20 @@ class App(tk.Tk):
         self._refresh_file_status()
 
         # Start button
-        self.start_btn = tk.Button(card, text="Start", command=self._start,
+        btn_row = tk.Frame(card, bg=CARD)
+        btn_row.grid(row=5, column=0, columnspan=2, pady=12)
+        self.start_btn = tk.Button(btn_row, text="Start", command=self._start,
                                    font=("Segoe UI", 12, "bold"),
                                    bg="#d1d5db", fg="#374151", relief="flat",
                                    padx=16, pady=8, state="disabled")
-        self.start_btn.grid(row=5, column=0, columnspan=2, pady=12)
+        self.start_btn.pack(side="left")
+        self.close_browser_btn = ttk.Button(btn_row, text="Close Browser",
+                                            command=self._close_browser,
+                                            state="disabled")
+        self.close_browser_btn.pack(side="left", padx=(10, 0))
+        ToolTip(self.close_browser_btn,
+                "The browser stays open between runs so you can inspect the "
+                "page. Click to close it.")
 
         self._on_env_change()   # apply the Training default styling
 
@@ -661,6 +717,138 @@ class App(tk.Tk):
         self.log_box.delete("1.0", "end")
         self.log_box.configure(state="disabled")
 
+    # ---- settings ----
+    def _build_settings(self, parent):
+        scroll = ScrollFrame(parent, bg=BG)
+        scroll.pack(fill="both", expand=True)
+        body = scroll.inner
+
+        card = self._card(body)
+        card.pack(fill="x", pady=(0, 10))
+        card.columnconfigure(0, weight=1)
+
+        tk.Label(card, text="Participant Master Data", bg=CARD, fg=TEXT,
+                 font=("Segoe UI", 12, "bold")).grid(
+            row=0, column=0, sticky="w", padx=10, pady=(10, 2))
+
+        self.auto_save_var = tk.BooleanVar(
+            value=bool(settings.get("participant_auto_save")))
+        chk = tk.Checkbutton(
+            card, text="Auto Save", variable=self.auto_save_var,
+            command=self._on_auto_save_toggle, bg=CARD, fg=TEXT,
+            selectcolor=CARD, activebackground=CARD,
+            font=("Segoe UI", 10, "bold"))
+        chk.grid(row=1, column=0, sticky="w", padx=6)
+        ToolTip(chk, "On: save each entry to PMIS and move to the next.\n"
+                     "Off: fill the form only, nothing is submitted.")
+
+        tk.Label(card, bg=CARD, fg=MUTED, justify="left", wraplength=520,
+                 font=("Segoe UI", 9),
+                 text=("On  - fills the form, saves the entry to PMIS, marks "
+                       "the row 'Updated' in the sheet, and moves to the next "
+                       "participant.\n"
+                       "Off - fills the form for the first pending "
+                       "participant and stops so you can review it. Nothing "
+                       "is submitted.")).grid(
+            row=2, column=0, sticky="w", padx=28, pady=(0, 6))
+
+        self.auto_save_warn = tk.Label(
+            card, bg=CARD, fg=ORANGE, justify="left", wraplength=520,
+            font=("Segoe UI", 9, "bold"), text="")
+        self.auto_save_warn.grid(row=3, column=0, sticky="w",
+                                 padx=28, pady=(0, 10))
+        self._refresh_auto_save_warning()
+
+        cred_card = self._card(body)
+        cred_card.pack(fill="x", pady=(0, 10))
+        cred_card.columnconfigure(0, weight=1)
+
+        tk.Label(cred_card, text="Credentials", bg=CARD, fg=TEXT,
+                 font=("Segoe UI", 12, "bold")).grid(
+            row=0, column=0, sticky="w", padx=10, pady=(10, 2))
+
+        self.keep_creds_var = tk.BooleanVar(
+            value=bool(settings.get("keep_credentials")))
+        kc = tk.Checkbutton(
+            cred_card, text="Keep credentials", variable=self.keep_creds_var,
+            command=self._on_keep_creds_toggle, bg=CARD, fg=TEXT,
+            selectcolor=CARD, activebackground=CARD,
+            font=("Segoe UI", 10, "bold"))
+        kc.grid(row=1, column=0, sticky="w", padx=6)
+        ToolTip(kc, "Remember the username and password for next launch.\n"
+                    "The password is encrypted for your Windows account.")
+
+        tk.Label(cred_card, bg=CARD, fg=MUTED, justify="left", wraplength=520,
+                 font=("Segoe UI", 9),
+                 text=("Pre-fills the username and password when the app "
+                       "opens. The password is encrypted with your Windows "
+                       "account, so the file is useless on another PC or "
+                       "under another user - but anyone signed in as you on "
+                       "this PC could use it. Leave off on shared "
+                       "machines.")).grid(
+            row=2, column=0, sticky="w", padx=28, pady=(0, 10))
+
+        note = self._card(body)
+        note.pack(fill="x")
+        tk.Label(note, bg=CARD, fg=MUTED, justify="left", wraplength=540,
+                 font=("Segoe UI", 9),
+                 text=(f"Settings are stored in {settings.SETTINGS_FILE} next "
+                       f"to the app. Usernames and passwords are never "
+                       f"saved - they are typed each time you run.")).pack(
+            anchor="w", padx=10, pady=10)
+
+    def _refresh_auto_save_warning(self):
+        if self.auto_save_var.get():
+            self.auto_save_warn.config(
+                text="Auto Save is ON - runs will write records into PMIS.")
+        else:
+            self.auto_save_warn.config(text="")
+
+    def _on_keep_creds_toggle(self):
+        keep = bool(self.keep_creds_var.get())
+        settings.set_value("keep_credentials", keep)
+        if keep:
+            self._store_credentials()
+        else:
+            settings.set_value("saved_username", "")
+            settings.set_value("saved_password", "")
+            self.log("Stored credentials cleared.")
+
+    def _store_credentials(self):
+        """Persist the current fields when Keep credentials is on."""
+        if not self.keep_creds_var.get():
+            return
+        settings.set_value("saved_username", self.user_var.get().strip())
+        token = credstore.protect(self.pw_var.get())
+        if token is None and self.pw_var.get():
+            settings.set_value("saved_password", "")
+            messagebox.showwarning(
+                APP_NAME, "The username was saved, but the password could not "
+                          "be encrypted on this system, so it was not stored.")
+            return
+        settings.set_value("saved_password", token or "")
+
+    def _load_credentials(self):
+        """Pre-fill the fields if Keep credentials was left on."""
+        if not settings.get("keep_credentials"):
+            return
+        user = settings.get("saved_username") or ""
+        if user:
+            self.user_var.set(user)
+        pw = credstore.unprotect(settings.get("saved_password"))
+        if pw:
+            self.pw_var.set(pw)
+        if user or pw:
+            self.log("Credentials restored from Settings.")
+
+    def _on_auto_save_toggle(self):
+        value = bool(self.auto_save_var.get())
+        if not settings.set_value("participant_auto_save", value):
+            messagebox.showwarning(
+                APP_NAME, "Could not save the setting to disk. It will apply "
+                          "for this session only.")
+        self._refresh_auto_save_warning()
+
     # ---- footer ----
     def _build_footer(self, root):
         tk.Label(root, text=APP_FOOTER, bg=BG, fg=MUTED,
@@ -716,6 +904,7 @@ class App(tk.Tk):
                     "Continue?"):
                 return
 
+        self._store_credentials()
         self._enter_running_state()
         self.worker = threading.Thread(
             target=self._run_worker,
@@ -745,7 +934,7 @@ class App(tk.Tk):
         self.running = True
         self.stop_event.clear()
         self._clear_log()
-        self.tabs.select(self.log_tab)   # show progress straight away
+        self.show_page("log")            # show progress straight away
         self._set_status("running")
         self.start_btn.config(text="Stop", command=self._stop,
                               state="normal", bg=ORANGE, fg="white")
@@ -780,14 +969,17 @@ class App(tk.Tk):
         result = {"stopped": False, "error": None}
         try:
             base_url = ENVIRONMENTS[env]
-            self.log(f"Launching browser for {env} ({base_url}) …")
             from browsers import make_driver, BrowserNotFound
-            try:
-                self.driver, name = make_driver()
-            except BrowserNotFound as e:
-                result["error"] = str(e)
-                return
-            self.log(f"Using {name.title()}.")
+            if self._driver_alive():
+                self.log("Reusing the browser already open (session kept).")
+            else:
+                self.log(f"Launching browser for {env} ({base_url}) …")
+                try:
+                    self.driver, name = make_driver()
+                except BrowserNotFound as e:
+                    result["error"] = str(e)
+                    return
+                self.log(f"Using {name.title()}.")
 
             mod_name, func_name = spec["runner"].split(":")
             runner = getattr(importlib.import_module(mod_name), func_name)
@@ -801,7 +993,9 @@ class App(tk.Tk):
             self.log(f"ERROR: {e}")
             self.log(traceback.format_exc())
         finally:
-            self._quit_driver()
+            # Deliberately NOT quitting the driver: the browser stays open so
+            # an error can be inspected (and an unsaved form reviewed), and the
+            # next run reuses this signed-in session.
             self._call(lambda: self._on_worker_done(result))
 
     def _on_worker_done(self, result):
@@ -812,6 +1006,41 @@ class App(tk.Tk):
         else:
             self._set_status("completed")
         self._leave_running_state()
+        self._update_browser_btn()
+
+    def _driver_alive(self):
+        """True if self.driver still points at a usable browser."""
+        if self.driver is None:
+            return False
+        try:
+            self.driver.title              # cheap round-trip to the browser
+            return True
+        except Exception:
+            try:
+                # A leftover modal dialog also blocks commands - clear it.
+                self.driver.switch_to.alert.accept()
+                self.driver.title
+                self.log("Dismissed a leftover dialog in the open browser.")
+                return True
+            except Exception:
+                self.driver = None
+                return False
+
+    def _update_browser_btn(self):
+        try:
+            state = "normal" if self._driver_alive() else "disabled"
+            self.close_browser_btn.config(state=state)
+        except Exception:
+            pass
+
+    def _close_browser(self):
+        if self.running:
+            messagebox.showinfo(APP_NAME, "A run is in progress - press Stop "
+                                          "first.")
+            return
+        self._quit_driver()
+        self._update_browser_btn()
+        self.log("Browser closed.")
 
     def _quit_driver(self):
         if self.driver is not None:

@@ -323,7 +323,7 @@ def run_geo_check(driver, excel_path, base_url, username, password,
                   log=print, stop_event=None):
     """Entry point used by the app (config -> 'geo_check:run_geo_check')."""
     bot = GeoChecker(driver, log=log, stop_event=stop_event)
-    bot.login(username, password, base_url)
+    bot.ensure_logged_in(username, password, base_url)
 
     loc_df = bot.build_location_df(excel_path, sheet)
     if loc_df.empty:
