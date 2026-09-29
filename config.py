@@ -14,7 +14,7 @@ DATA_TEMPLATE_NAME = "PMIS Data.template.xlsx"
 
 # GitHub repo used for the "app update available" check on startup.
 # Format: "owner/repo". Leave as None to disable the check entirely.
-GITHUB_REPO = "REPLACE_ME/pmis-automation-tool"
+GITHUB_REPO = "mr-imran-syed/PMIS-Automator"
 GITHUB_BRANCH = "main"
 
 
