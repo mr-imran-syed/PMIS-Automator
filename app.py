@@ -768,6 +768,31 @@ class App(tk.Tk):
                                  padx=28, pady=(0, 10))
         self._refresh_auto_save_warning()
 
+        shg_card = self._card(body)
+        shg_card.pack(fill="x", pady=(0, 10))
+        shg_card.columnconfigure(0, weight=1)
+        tk.Label(shg_card, text="SHG Creation", bg=CARD, fg=TEXT,
+                 font=("Segoe UI", 12, "bold")).grid(
+            row=0, column=0, sticky="w", padx=10, pady=(10, 2))
+        self.shg_auto_save_var = tk.BooleanVar(
+            value=bool(settings.get("shg_auto_save")))
+        shg_chk = tk.Checkbutton(
+            shg_card, text="Auto Save", variable=self.shg_auto_save_var,
+            command=self._on_shg_auto_save_toggle, bg=CARD, fg=TEXT,
+            selectcolor=CARD, activebackground=CARD,
+            font=("Segoe UI", 10, "bold"))
+        shg_chk.grid(row=1, column=0, sticky="w", padx=6)
+        ToolTip(shg_chk, "On: create each SHG in PMIS and move to the next.\n"
+                         "Off: fill the first one only, nothing is saved.")
+        tk.Label(shg_card, bg=CARD, fg=MUTED, justify="left", wraplength=520,
+                 font=("Segoe UI", 9),
+                 text=("The outcome of every row is written into the sheet's "
+                       "PMIS-Update column - 'Updated' when it is created, or "
+                       "the error PMIS reported (for example \"SHG Name "
+                       "already exists\") so you can see why it "
+                       "did not.")).grid(
+            row=2, column=0, sticky="w", padx=28, pady=(0, 10))
+
         cred_card = self._card(body)
         cred_card.pack(fill="x", pady=(0, 10))
         cred_card.columnconfigure(0, weight=1)
@@ -812,6 +837,9 @@ class App(tk.Tk):
                 text="Auto Save is ON - runs will write records into PMIS.")
         else:
             self.auto_save_warn.config(text="")
+
+    def _on_shg_auto_save_toggle(self):
+        settings.set_value("shg_auto_save", bool(self.shg_auto_save_var.get()))
 
     def _on_keep_creds_toggle(self):
         keep = bool(self.keep_creds_var.get())

@@ -15,6 +15,7 @@ SETTINGS_FILE = "settings.json"
 # explicit, deliberate choice rather than something inherited silently.
 DEFAULTS = {
     "participant_auto_save": False,
+    "shg_auto_save": False,
     # When on, the username and a DPAPI-encrypted password are kept so the
     # fields are pre-filled next launch. Off by default.
     "keep_credentials": False,

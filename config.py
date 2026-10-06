@@ -99,6 +99,26 @@ UPDATE_TYPES = {
         "runner": "participant:run_participant_entry",
         "validator": "geo_check:validate_fpo_codes",
     },
+    # Creates OG SHGs from the `shg` sheet. Outcomes (including the real
+    # error text) are written back into the sheet's PMIS-Update column.
+    "SHG Creation": {
+        "sheet": "shg",
+        "status_col": "PMIS-Update",
+        "required": ["SHG_Name", "SHG_Type", "partner_name",
+                     "work_order_number", "Date_Of_Formation", "State_Name",
+                     "District_Name", "Block_Name", "Grampanchayat_Name",
+                     "Village_Name", "Commodities_Name"],
+        "runner": "shg:run_shg_creation",
+    },
+    # Read-only. Same idea as the participant checker, but it walks the SHG
+    # sheet's cascades against the Create SHG page (and flags hamlets too).
+    "SHG - Geo Checker": {
+        "sheet": "shg",
+        "status_col": "PMIS-Update",     # not written to; read-only
+        "required": ["State_Name", "District_Name", "Block_Name",
+                     "Grampanchayat_Name", "Village_Name"],
+        "runner": "shg:run_shg_geo_check",
+    },
     # Read-only check: verifies every unique location cascade in the
     # participant sheet actually exists on the Create Member page.
     "Participant - Geo Checker": {
@@ -249,6 +269,51 @@ PARTICIPANT_GEO_COLUMNS = {
     "Block": "block",
     "GP": "grampanchayat",
     "Village": "village",
+}
+
+
+# --- SHG creation --------------------------------------------------------
+SHG_SHEET = "shg"
+SHG_LIST_PATH = "shgs/list"          # carries "Partner :" / "Project :"
+SHG_CREATE_PATH = "shg/create?type=Shg"   # the OG "Create SHG" link
+
+# Only this SHG_Type is handled (FOAB SHGs use ?type=Coop and are out of scope).
+SHG_TYPE_ALLOWED = "OG"
+
+SHG_STATUS_COL = "PMIS-Update"
+SHG_DONE_MARKER = "Updated"
+# Written by the SHG geo checker when a cascade is fully valid.
+SHG_GEO_OK_MARKER = "Geo OK"
+SHG_DEFAULT_STATUS = "Active"        # the form's GroupStatus dropdown
+
+# Hamlet values that mean "there isn't one" - the field is then left alone.
+SHG_NO_HAMLET_VALUES = {"NO HAMLET", "NA", "NONE", "-"}
+
+# Pause after saving before reading back any validation message.
+SHG_SAVE_SETTLE = 1.0
+
+# Sheet column for each piece of data.
+SHG_COLUMNS = {
+    "name":      "SHG_Name",
+    "type":      "SHG_Type",
+    "partner":   "partner_name",
+    "workorder": "work_order_number",
+    "date":      "Date_Of_Formation",
+    "state":     "State_Name",
+    "district":  "District_Name",
+    "block":     "Block_Name",
+    "gp":        "Grampanchayat_Name",
+    "village":   "Village_Name",
+    "hamlet":    "Hamlet_Name",
+    "commodity": "Commodities_Name",
+}
+
+# Controls on the Create SHG form (confirmed against the live page).
+SHG_FORM = {
+    "name":   '//input[@id="ShgName"]',
+    "date":   '//input[@id="DateOfFormationAttr"]',
+    "status": '//select[@name="GroupStatus"]',
+    "save":   '//input[@id="SubmitButton"]',
 }
 
 

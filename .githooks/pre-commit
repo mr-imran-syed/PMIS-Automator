@@ -1,0 +1,35 @@
+#!/bin/sh
+# Bump the patch number in VERSION on every commit, so each push to GitHub
+# advertises a new version to the in-app update check.
+#
+# If VERSION is already staged (you edited it yourself, e.g. 0.1.9 -> 0.2.0),
+# that deliberate choice is kept and nothing is auto-incremented.
+#
+# Enable once with:   git config core.hooksPath .githooks
+
+if git diff --cached --name-only | grep -qx "VERSION"; then
+    echo "pre-commit: VERSION staged manually ($(cat VERSION)) - left as is."
+    exit 0
+fi
+
+if [ ! -f VERSION ]; then
+    echo "0.1.0" > VERSION
+fi
+
+current=$(tr -d ' \t\r\n' < VERSION)
+major=$(echo "$current" | cut -d. -f1)
+minor=$(echo "$current" | cut -d. -f2)
+patch=$(echo "$current" | cut -d. -f3)
+
+case "$major$minor$patch" in
+    *[!0-9]*|"")
+        echo "pre-commit: VERSION '$current' is not x.y.z - leaving it alone."
+        exit 0
+        ;;
+esac
+
+next="$major.$minor.$((patch + 1))"
+printf '%s\n' "$next" > VERSION
+git add VERSION
+echo "pre-commit: VERSION $current -> $next"
+exit 0
