@@ -10,11 +10,14 @@ driven from a GUI. Holds all the hardening we developed:
   - PMIS='Checked' write-back to the source workbook for resumable runs
 """
 
+import difflib
 import time
 import random
 
-import pandas as pd
 from openpyxl import load_workbook
+
+import config
+import data_file
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -30,6 +33,23 @@ from selenium.common.exceptions import (
 # NOTE: environment URLs live in config.ENVIRONMENTS (single source of truth).
 
 REQUIRED_COLUMNS = ["State", "District", "Block", "GP", "Village"]
+
+# The cascade, top to bottom: log name, Excel column, <select name>, 'Add' id.
+# State/District have no 'Add' - they are never created from here.
+LEVELS = [
+    ("State",    "State",       "ProvinceId",      None),
+    ("District", "District",    "DistrictId",      None),
+    ("Block",    "Block",       "MunicipalityId",  "addMunicipality"),
+    ("GP",       "GP",          "GrampanchayatId", "addGrampanchayat"),
+    ("Village",  "Village",     "VillageId",       "addVillage"),
+    ("Hamlet",   "Hamlet_Name", "HamletId",        "addHamlet"),
+]
+GEO_COLUMNS = [col for _, col, _, _ in LEVELS]
+
+
+def _blank(value):
+    """True for an empty cell."""
+    return value is None or not str(value).strip()
 
 
 class StopRequested(Exception):
@@ -50,6 +70,7 @@ class GeoBot:
         self._geo_file = None
         self._sheet = None
         self._status_col = "PMIS"
+        self._unsaved = 0           # rows marked but not yet written to disk
         self._creds = None          # kept so a signed-out page can re-auth
         self._base_url = None
 
@@ -251,6 +272,29 @@ class GeoBot:
                 return False
             time.sleep(poll)
 
+    def options(self, xpath):
+        """Option texts of one dropdown, [] if it cannot be read."""
+        try:
+            sel = Select(self.driver.find_element(By.XPATH, xpath))
+            return [o.text.strip() for o in sel.options]
+        except Exception:
+            return []
+
+    def suggest(self, xpath, value):
+        """Dropdown entries closest to `value`, best first, [] if none are.
+
+        Sheet spellings drift from PMIS's ("GHATAGAON" vs "GHATGAON"), so a
+        miss is usually a typo rather than a genuinely absent place.
+        """
+        choices = {}
+        for text in self.options(xpath):
+            if text and not text.lower().startswith("select"):
+                choices.setdefault(text.casefold(), text)
+        hits = difflib.get_close_matches(
+            str(value).strip().casefold(), list(choices),
+            n=config.FUZZY_MAX, cutoff=config.FUZZY_CUTOFF)
+        return [choices[h] for h in hits]
+
     def wait_modal_gone(self, timeout=10):
         """Ensure the shared add-modal (#pop-up-div) is dismissed. If it stalls
         open, close it ourselves (button, then JS force-hide) instead of raising."""
@@ -292,115 +336,48 @@ class GeoBot:
             EC.element_to_be_clickable((By.XPATH, add_xpath))).click()
 
     # ---------------------------------------------------------- cascade levels
-    def select_state(self, state_name):
-        state = Select(self.driver.find_element(
-            By.XPATH, '//select[@name="ProvinceId"]'))
-        WebDriverWait(self.driver, 10).until(lambda d: len(state.options) > 1)
-        state.select_by_visible_text(state_name)
+    def select_level(self, select_name, value, add_id=None):
+        """Pick `value` in one cascade dropdown, creating it if it is missing.
 
-    def select_district(self, district_name):
-        district = Select(self.driver.find_element(
-            By.XPATH, '//select[@name="DistrictId"]'))
-        WebDriverWait(self.driver, 10).until(lambda d: len(district.options) > 1)
-        district.select_by_visible_text(district_name)
-
-    def select_block(self, block_name):
-        if not pd.notna(block_name):
-            return None
+        Returns True when the item had to be created (the page reloads the
+        cascade, so the caller must replay it), False when it was already there.
+        """
+        xpath = f'//select[@name="{select_name}"]'
+        self.wait.until(EC.visibility_of_element_located((By.XPATH, xpath)))
+        if self.find_and_select(xpath, value):
+            self.rest()
+            return False
+        if add_id is None:
+            raise RuntimeError(
+                f"'{str(value).strip()}' is not in the {select_name} list "
+                f"and could not be created.")
+        self.click_add(f'//a[@id="{add_id}"]')
         self.wait.until(EC.visibility_of_element_located(
-            (By.XPATH, '//select[@name="MunicipalityId"]')))
-        if self.find_and_select('//select[@name="MunicipalityId"]', block_name):
-            self.rest()
-            return None
-        try:
-            self.click_add('//a[@id="addMunicipality"]')
-            self.wait.until(EC.visibility_of_element_located(
-                (By.XPATH, '//input[@id="SubmitButton"]')))
-            box = self.driver.find_element(
-                By.XPATH, '//div[@class="modal-header"]//input[@id="Name"]')
-            box.click()
-            box.send_keys(str(block_name))
-            self.rest()
-            self.save_button()
-            WebDriverWait(self.driver, 3).until(EC.alert_is_present())
-            self.rest()
-            self.alert.accept()
-            self.wait_modal_gone()
-            self.log(f"Added Block: {block_name}")
-            self.rest()
-            return "New Block"
-        except (NoSuchElementException, TimeoutException):
-            self.log(f"  ! could not add Block: {block_name}")
-            return None
-
-    def select_gp(self, gp_name):
-        if not pd.notna(gp_name):
-            return None
-        self.wait.until(EC.visibility_of_element_located(
-            (By.XPATH, '//select[@name="GrampanchayatId"]')))
-        if self.find_and_select('//select[@name="GrampanchayatId"]', gp_name):
-            self.rest()
-            return None
-        try:
-            self.click_add('//a[@id="addGrampanchayat"]')
-            self.wait.until(EC.visibility_of_element_located(
-                (By.XPATH, '//input[@id="SubmitButton"]')))
-            box = self.driver.find_element(
-                By.XPATH, '//div[@class="modal-header"]//input[@id="Name"]')
-            box.click()
-            box.send_keys(str(gp_name))
-            self.rest()
-            self.save_button()
-            WebDriverWait(self.driver, 3).until(EC.alert_is_present())
-            self.rest()
-            self.alert.accept()
-            self.wait_modal_gone()
-            self.log(f"Added GP: {gp_name}")
-            self.rest()
-            return "New GP"
-        except (NoSuchElementException, TimeoutException):
-            self.log(f"  ! could not add GP: {gp_name}")
-            return None
-
-    def select_village(self, village_name):
-        if not pd.notna(village_name):
-            return None
-        self.wait.until(EC.visibility_of_element_located(
-            (By.XPATH, '//select[@name="VillageId"]')))
-        if self.find_and_select('//select[@name="VillageId"]', village_name):
-            return None
-        try:
-            self.click_add('//a[@id="addVillage"]')
-            self.wait.until(EC.visibility_of_element_located(
-                (By.XPATH, '//input[@id="SubmitButton"]')))
-            box = self.driver.find_element(
-                By.XPATH, '//div[@class="modal-header"]//input[@id="Name"]')
-            box.click()
-            box.send_keys(str(village_name))
-            self.save_button()
-            WebDriverWait(self.driver, 3).until(EC.alert_is_present())
-            self.rest()
-            self.alert.accept()
-            self.wait_modal_gone()
-            self.log(f"Added Village: {village_name}")
-            return "New Village"
-        except (NoSuchElementException, TimeoutException):
-            self.log(f"  ! could not add Village: {village_name}")
-            return None
+            (By.XPATH, '//input[@id="SubmitButton"]')))
+        box = self.driver.find_element(
+            By.XPATH, '//div[@class="modal-header"]//input[@id="Name"]')
+        box.click()
+        box.send_keys(str(value).strip())
+        self.rest()
+        self.save_button()
+        WebDriverWait(self.driver, 3).until(EC.alert_is_present())
+        self.rest()
+        self.alert.accept()
+        self.wait_modal_gone()
+        self.rest()
+        return True
 
     # ------------------------------------------------------------- excel + run
     def load_geo_data(self, geo_file, sheet, status_col="PMIS"):
-        df = pd.read_excel(geo_file, sheet_name=sheet)
-        missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+        """Rows still to process, each carrying its own Excel row number."""
+        headers, rows = data_file.read_rows(geo_file, sheet)
+        missing = [c for c in REQUIRED_COLUMNS if c not in headers]
         if missing:
             raise ValueError(
                 f"Sheet '{sheet}' is missing required column(s): "
                 f"{', '.join(missing)}")
-        if status_col not in df.columns:
-            df[status_col] = pd.NA
-        df = df[REQUIRED_COLUMNS + [status_col]]
-        df = df.reset_index().rename(columns={"index": "src_row"})
-        return df[df[status_col] != "Checked"].reset_index(drop=True)
+        return [r for r in rows
+                if str(r.get(status_col, "")).strip() != "Checked"]
 
     def _open_wb(self, geo_file, sheet):
         self._geo_file = geo_file
@@ -413,15 +390,29 @@ class GeoBot:
             self._pmis_col = self._ws.max_column + 1
             self._ws.cell(row=1, column=self._pmis_col, value=self._status_col)
 
-    def mark_checked(self, src_row):
+    def mark_checked(self, excel_row, flush=False):
+        """Mark a row done. Saving the workbook costs far more than setting a
+        cell, so batch the saves - at most GEO_FLUSH_EVERY rows are ever at
+        risk, and the run flushes when it stops."""
         if self._ws is None:
             self._open_wb(self._geo_file, self._sheet)
-        self._ws.cell(row=int(src_row) + 2, column=self._pmis_col, value="Checked")
+        self._ws.cell(row=int(excel_row), column=self._pmis_col,
+                      value="Checked")
+        self._unsaved += 1
+        if flush or self._unsaved >= config.GEO_FLUSH_EVERY:
+            self.flush()
+
+    def flush(self):
+        """Write pending 'Checked' marks to disk."""
+        if not self._unsaved or self._wb is None:
+            return
         try:
             self._wb.save(self._geo_file)
+            self._unsaved = 0
         except PermissionError:
-            self.log(f"  ! Could not save Excel (is it open?). Row {int(src_row)} "
-                     f"not marked - close Excel to enable resume.")
+            self.log("  ! Could not save Excel (is it open?) - "
+                     f"{self._unsaved} row(s) not marked. Close Excel to "
+                     f"enable resume.")
 
     def run(self, excel_path, base_url, username, password,
             sheet="Geographical Details", status_col="PMIS"):
@@ -444,35 +435,50 @@ class GeoBot:
 
         done = 0
         try:
-            for i, row in data.iterrows():
+            for i, row in enumerate(data):
                 self._check_stop()
-                state = row["State"]
-                self.log(f"#{i} [{state}] B:{row['Block']}  "
-                         f"GP:{row['GP']}  V:{row['Village']}")
+                self.log("#{} [{}] B:{}  GP:{}  V:{}  H:{}".format(
+                    i, row["State"], row["Block"], row["GP"], row["Village"],
+                    row.get("Hamlet_Name") if not _blank(
+                        row.get("Hamlet_Name")) else "-"))
 
-                self.select_state(state)
-                self.select_district(row["District"])
-                x = self.select_block(row["Block"])
-                if x == "New Block":
-                    self.select_state(state)
-                    self.select_district(row["District"])
-                    self.select_block(row["Block"])
+                # Walk the cascade; a level we had to create reloads the page,
+                # so replay from the top before carrying on down.
+                n = 0
+                created = set()
+                try:
+                    while n < len(LEVELS):
+                        name, col, select_name, add_id = LEVELS[n]
+                        value = row.get(col)
+                        if _blank(value):
+                            break      # nothing below an empty level either
+                        # One creation attempt per level per row: if it is
+                        # still missing afterwards, the row is left unchecked.
+                        if self.select_level(
+                                select_name, value,
+                                None if name in created else add_id):
+                            self.log(f"Added {name}: {str(value).strip()}")
+                            created.add(name)
+                            n = 0      # replay onto the reloaded page
+                            continue
+                        n += 1
+                except (RuntimeError, TimeoutException,
+                        NoSuchElementException) as e:
+                    self.log(f"  ! row {i} skipped: {e}")
+                    continue           # leave it unchecked so it retries
 
-                y = self.select_gp(row["GP"])
-                if y == "New GP":
-                    self.select_state(state)
-                    self.select_district(row["District"])
-                    self.select_block(row["Block"])
-                    self.select_gp(row["GP"])
-
-                self.select_village(row["Village"])
-                self.mark_checked(row["src_row"])
+                self.mark_checked(row["_row"])
                 done += 1
         except StopRequested:
+            self.flush()
             self.log(f"Stopped by user. {done} of {total} row(s) done "
                      f"(progress saved).")
             return done
+        except Exception:
+            self.flush()        # never lose rows that really were processed
+            raise
 
+        self.flush()
         self.log(f"Done. Processed {done} row(s).")
         return done
 

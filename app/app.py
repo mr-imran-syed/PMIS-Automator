@@ -18,6 +18,7 @@ import deps
 import data_file
 import settings
 import credstore
+import logo
 from config import (APP_NAME, APP_FOOTER, ENVIRONMENTS, UPDATE_TYPES,
                     BROWSER_DOWNLOAD_URL)
 
@@ -30,6 +31,7 @@ BORDER = "#e2e5ea"
 TEXT = "#1f2430"
 MUTED = "#6b7280"
 GREEN = "#1a7f37"
+BLUE = "#1a56b8"
 YELLOW = "#c9960a"
 YELLOW_BG = "#fff3cd"
 ORANGE = "#c2551a"
@@ -49,7 +51,7 @@ STATUS_STYLES = {
         "text": "IDLE", "emoji": "•", "frames": None,
     },
     "running": {
-        "bg": "#e6f4ea", "fg": GREEN, "bd": "#9ccfb0",
+        "bg": "#e4edfd", "fg": BLUE, "bd": "#9dbdf0",
         "text": "Running", "emoji": "🐱", "frames": CAT_FRAMES,
     },
     "stopping": {
@@ -131,6 +133,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_NAME)
+        self._icon = logo.apply_to(self)        # keep a ref or Tk drops it
         self.geometry("720x760")
         self.minsize(520, 420)   # content scrolls, so allow small windows
         self.configure(bg=BG)
@@ -194,8 +197,13 @@ class App(tk.Tk):
         root = tk.Frame(self, bg=BG)
         root.pack(fill="both", expand=True, padx=14, pady=12)
 
-        tk.Label(root, text=APP_NAME, bg=BG, fg=TEXT,
-                 font=("Segoe UI", 16, "bold")).pack(anchor="w")
+        head = tk.Frame(root, bg=BG)
+        head.pack(anchor="w", fill="x")
+        self._mark = logo.image(2)
+        tk.Label(head, image=self._mark, bg=BG).pack(side="left",
+                                                     padx=(0, 8))
+        tk.Label(head, text=APP_NAME, bg=BG, fg=TEXT,
+                 font=("Segoe UI", 16, "bold")).pack(side="left")
 
         # Status bar lives outside the tabs so it is visible from any tab.
         self._build_status(root)
@@ -1110,4 +1118,5 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
+    logo.set_app_id()      # before the window, or Windows groups us as Python
     App().mainloop()

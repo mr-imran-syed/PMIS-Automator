@@ -1,0 +1,53 @@
+PMIS AUTOMATION TOOL
+====================
+
+WHAT YOU SEE IN THIS FOLDER
+---------------------------
+   run.bat            Double-click this to start the tool.
+   PMIS Data.xlsx     Your data. Open it in Excel, fill it in, close it.
+   app\               The program itself. You never need to open this.
+
+FIRST RUN
+---------
+1. Double-click run.bat.
+   If Python is not installed, the download page opens. Install it,
+   tick "Add python.exe to PATH", then run it again.
+
+2. On the Setup tab, check the readiness list.
+   If Selenium / openpyxl show "Missing", click their [Install] button
+   and wait for "Ready".
+
+3. Pick the environment:
+      Training  - safe practice. Nothing reaches the real system.
+      Live      - the real PMIS. Changes are permanent.
+
+4. Enter your PMIS username and password, choose what to update,
+   and press Start. Progress appears on the Log tab.
+
+USING THE DATA FILE
+-------------------
+Close "PMIS Data.xlsx" in Excel before pressing Start - the tool writes
+your results back into it, and Excel locks the file while it is open.
+
+Each sheet has a status column the tool reads and writes:
+
+   Geographical Details   PMIS         blank = to do, "Checked" = done
+   shg                    PMIS-Update  type "Load" on the rows you want
+   Participant Master...  PMIS-Update  blank = to do, "Updated" = done
+                          Geo-Check    type "Load" on the rows you want
+                                       checked (the geo checker writes its
+                                       findings here, so it never disturbs
+                                       PMIS-Update)
+
+For SHGs, the tool first checks every name against PMIS and writes
+"SHG Name already exists" for the ones already there, then creates the
+rest and writes "SHG Created". Anything else in that cell is the reason
+PMIS gave for not accepting the row.
+
+IF SOMETHING GOES WRONG
+-----------------------
+The Log tab explains what happened. The browser is left open on the
+page that failed, so you can look at it yourself. Press Stop to end a
+run early - whatever finished is already saved to the Excel file.
+
+                                              Made by Imran Syed

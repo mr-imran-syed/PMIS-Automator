@@ -93,18 +93,21 @@ def latest_app_version(repo=None, timeout=4):
     except Exception:
         pass
 
+    # VERSION lives in app/ since the repack; "VERSION" is where it used to
+    # sit, kept so a copy published before the repack is still recognised.
     branch = getattr(config, "GITHUB_BRANCH", "main")
     for br in (branch, "master"):
-        try:
-            raw = f"https://raw.githubusercontent.com/{repo}/{br}/VERSION"
-            req = urllib.request.Request(
-                raw, headers={"User-Agent": "pmis-automation-tool"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                v = r.read().decode("utf-8").strip()
-            if v:
-                return v
-        except Exception:
-            continue
+        for path in ("app/VERSION", "VERSION"):
+            try:
+                raw = f"https://raw.githubusercontent.com/{repo}/{br}/{path}"
+                req = urllib.request.Request(
+                    raw, headers={"User-Agent": "pmis-automation-tool"})
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    v = r.read().decode("utf-8").strip()
+                if v:
+                    return v
+            except Exception:
+                continue
     return None
 
 

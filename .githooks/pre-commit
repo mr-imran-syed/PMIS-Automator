@@ -7,16 +7,16 @@
 #
 # Enable once with:   git config core.hooksPath .githooks
 
-if git diff --cached --name-only | grep -qx "VERSION"; then
-    echo "pre-commit: VERSION staged manually ($(cat VERSION)) - left as is."
+if git diff --cached --name-only | grep -qx "app/VERSION"; then
+    echo "pre-commit: VERSION staged manually ($(cat app/VERSION)) - left as is."
     exit 0
 fi
 
-if [ ! -f VERSION ]; then
-    echo "0.1.0" > VERSION
+if [ ! -f app/VERSION ]; then
+    echo "0.1.0" > app/VERSION
 fi
 
-current=$(tr -d ' \t\r\n' < VERSION)
+current=$(tr -d ' \t\r\n' < app/VERSION)
 major=$(echo "$current" | cut -d. -f1)
 minor=$(echo "$current" | cut -d. -f2)
 patch=$(echo "$current" | cut -d. -f3)
@@ -29,7 +29,7 @@ case "$major$minor$patch" in
 esac
 
 next="$major.$minor.$((patch + 1))"
-printf '%s\n' "$next" > VERSION
-git add VERSION
+printf '%s\n' "$next" > app/VERSION
+git add app/VERSION
 echo "pre-commit: VERSION $current -> $next"
 exit 0

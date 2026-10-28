@@ -16,7 +16,6 @@ writes 'Updated' back to the sheet - nothing is submitted to PMIS.
 import time
 from datetime import date
 
-import pandas as pd
 from openpyxl import load_workbook
 
 from selenium.webdriver.common.by import By
@@ -27,9 +26,12 @@ from selenium.common.exceptions import (
     TimeoutException,
     NoSuchElementException,
     StaleElementReferenceException,
+    UnexpectedAlertPresentException,
+    NoAlertPresentException,
 )
 
 import config
+import data_file
 import settings
 from pmis_geo import GeoBot, StopRequested
 from geo_check import normalize_fpo, LEVEL_XPATHS, LEVEL_ORDER, _read_sheet
@@ -112,32 +114,26 @@ def build_participants_df(excel_path, sheet):
     geo = config.PARTICIPANT_GEO_COLUMNS
     fpo_col = config.PARTICIPANT_FPO_COLUMN
 
-    df = _read_sheet(excel_path, sheet)
-    df["_row"] = df.index + 2                       # Excel row (incl. header)
+    headers, rows = _read_sheet(excel_path, sheet)
 
     needed = [fpo_col] + list(geo.values()) + [cols["name"]]
-    missing = [c for c in needed if c not in df.columns]
+    missing = [c for c in needed if c not in headers]
     if missing:
         raise ValueError(
             f"Sheet '{sheet}' is missing column(s): {', '.join(missing)}")
 
-    # Skip anyone already saved to PMIS, so auto-save runs are resumable.
-    status_col = "PMIS-Update"
-    if status_col in df.columns:
-        done = config.PARTICIPANT_DONE_MARKER.lower()
-        df = df[df[status_col].astype(str).str.strip().str.lower() != done]
-        df = df.reset_index(drop=True)
-
-    shg_col = cols.get("shg_code")
-    df["_case"] = [
-        classify_case(f, df[shg_col].iloc[i] if shg_col in df.columns else "")
-        for i, f in enumerate(df[fpo_col])
-    ]
-    age_col = cols["age"]
-    df[config.PARTICIPANT_YOB_COLUMN] = [
-        derive_year_of_birth(a) for a in df.get(age_col, [""] * len(df))
-    ]
-    return df
+    done = config.PARTICIPANT_DONE_MARKER.lower()
+    shg_col = cols.get("shg_code", "")
+    out = []
+    for r in rows:
+        # Skip anyone already saved to PMIS, so auto-save runs are resumable.
+        if data_file.text(r, "PMIS-Update").lower() == done:
+            continue
+        r["_case"] = classify_case(r.get(fpo_col, ""), r.get(shg_col, ""))
+        r[config.PARTICIPANT_YOB_COLUMN] = derive_year_of_birth(
+            r.get(cols["age"], ""))
+        out.append(r)
+    return out
 
 
 def write_yob_column(excel_path, sheet, df, log=print):
@@ -152,7 +148,7 @@ def write_yob_column(excel_path, sheet, df, log=print):
         if idx is None:
             idx = ws.max_column + 1
             ws.cell(row=1, column=idx, value=col_name)
-        for _, row in df.iterrows():
+        for row in df:
             ws.cell(row=int(row["_row"]), column=idx,
                     value=row[col_name] or None)
         wb.save(excel_path)
@@ -192,6 +188,51 @@ class MemberForm(GeoBot):
     """Fills the member registration form. Never submits."""
 
     # ---------------------------------------------------------- primitives
+    def consume_alert(self, timeout=0.0):
+        """Accept any dialog that is open and return its text (else '').
+
+        PMIS raises informational dialogs mid-cascade - for example
+        "There are no Hamlets for this village!" - and while one is open
+        EVERY WebDriver command fails. They have to be cleared, not avoided.
+        """
+        deadline = time.time() + max(0.0, timeout)
+        while True:
+            try:
+                alert = self.driver.switch_to.alert
+                text = (alert.text or "").strip()
+                alert.accept()
+                self.last_alert = text
+                return text
+            except (NoAlertPresentException, Exception):
+                pass
+            if time.time() >= deadline:
+                return ""
+            time.sleep(0.1)
+
+    def _note_alert(self, exc=None):
+        """Record the text of an alert that just broke a command.
+
+        Selenium already dismissed it (default 'dismiss and notify') and put
+        the wording on the exception, so read it from there; otherwise try to
+        clear whatever is still open.
+        """
+        text = ""
+        try:
+            text = (getattr(exc, "alert_text", None) or "").strip()
+        except Exception:
+            text = ""
+        if not text:
+            text = self.consume_alert()
+        if text:
+            self.last_alert = text
+        return text
+
+    def take_last_alert(self):
+        """Return and clear the most recent alert text."""
+        text = getattr(self, "last_alert", "") or ""
+        self.last_alert = ""
+        return text
+
     def pick(self, xpath, value, timeout=10, poll=0.2):
         """Select an option by visible text, case/space-insensitive.
 
@@ -207,7 +248,12 @@ class MemberForm(GeoBot):
                 for opt in sel.options:
                     if opt.text.strip().casefold() == target:
                         sel.select_by_visible_text(opt.text)
+                        # Selecting can itself raise a dialog; clear it now so
+                        # the next command does not fail.
+                        self.consume_alert()
                         return True
+            except UnexpectedAlertPresentException as e:
+                self._note_alert(e)          # clear it and retry
             except (NoSuchElementException, StaleElementReferenceException):
                 pass
             if time.time() >= deadline:
@@ -218,10 +264,16 @@ class MemberForm(GeoBot):
     def _log_options(self, xpath, limit=14):
         """Show what the dropdown actually offers, so a text mismatch is
         obvious instead of just 'MISS'."""
-        try:
-            opts = [o.text.strip() for o in
-                    Select(self.driver.find_element(By.XPATH, xpath)).options]
-        except Exception:
+        opts = None
+        for _ in range(2):
+            try:
+                opts = [o.text.strip() for o in
+                        Select(self.driver.find_element(By.XPATH,
+                                                        xpath)).options]
+                break
+            except Exception as e:
+                self._note_alert(e)
+        if opts is None:
             self.log("      (could not read the dropdown's options)")
             return
         if not opts:
@@ -237,6 +289,12 @@ class MemberForm(GeoBot):
         try:
             el = self.wait.until(EC.visibility_of_element_located(
                 (By.XPATH, xpath)))
+        except UnexpectedAlertPresentException as e:
+            self._note_alert(e)
+            try:
+                el = self.driver.find_element(By.XPATH, xpath)
+            except Exception:
+                return False
         except TimeoutException:
             return False
         try:
@@ -411,30 +469,6 @@ class MemberForm(GeoBot):
                 self.log(f"        {f}")
         else:
             self.log("      no progress-bar-like elements found on this page")
-
-    def wait_progress_bar(self, timeout=30, poll=0.15):
-        """Wait for the page's thin loading bar to appear and then finish.
-
-        Returns the selector that was tracked, or None if no bar ever showed
-        (in which case the caller falls back to another readiness signal).
-        """
-        appear_deadline = time.time() + config.PARTICIPANT_PROGRESS_APPEAR
-        active = None
-        while time.time() < appear_deadline:
-            active = self._active_progress_bar()
-            if active:
-                break
-            time.sleep(poll)
-        if not active:
-            return None
-
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if not self._active_progress_bar():
-                time.sleep(config.PARTICIPANT_PROGRESS_SETTLE)
-                return active
-            time.sleep(poll)
-        return active          # finished waiting, but the bar never cleared
 
     def wait_reloaded(self, anchor, timeout=None):
         """Wait out the full page refresh that follows Save & Continue.
@@ -750,16 +784,17 @@ def run_participant_entry(driver, excel_path, base_url, username, password,
     df = build_participants_df(excel_path, sheet)
     write_yob_column(excel_path, sheet, df, log)
 
-    case1 = df[df["_case"] == 1]
+    case1 = [r for r in df if r["_case"] == 1]
     tally = {1: 0, 2: 0, 3: 0, "none": 0}
-    for c in df["_case"]:
+    for r in df:
+        c = r["_case"]
         tally[c if c in (1, 2, 3) else "none"] += 1
     log(f"Pending rows: {len(df)}  |  Case 1 (FOAB, not SHG): {tally[1]}  "
         f"|  Case 2 (SHG only): {tally[2]}  |  Case 3 (both): {tally[3]}  "
         f"|  neither: {tally['none']}")
     log(f"Auto Save is {'ON - entries WILL be saved to PMIS' if auto_save else 'OFF - nothing will be submitted'}.")
 
-    if case1.empty:
+    if not case1:
         log("No Case 1 rows to enter (need a valid fpo_code and blank SHG).")
         return 0
 
@@ -770,7 +805,7 @@ def run_participant_entry(driver, excel_path, base_url, username, password,
     current_coop = None
 
     try:
-        for _, row in case1.iterrows():
+        for row in case1:
             bot._check_stop()
             coop_id = normalize_fpo(row[config.PARTICIPANT_FPO_COLUMN])[0]
             excel_row = int(row["_row"])

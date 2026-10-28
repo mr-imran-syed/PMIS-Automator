@@ -7,11 +7,23 @@ Current features:
 
 | Option | What it does |
 |---|---|
-| **Geographical Details** | Adds Block / GP / Village entries to PMIS from the `Geographical Details` sheet. Resumable. |
+| **Geographical Details** | Adds Block / GP / Village / Hamlet entries to PMIS from the `Geographical Details` sheet. Resumable. |
 | **Participant - Geo Checker** | Read-only. Verifies every unique location cascade in the participant sheet exists, per FPO, and reports what's missing. |
 | **Participant Master Data** | Placeholder — not implemented yet. |
 
 ---
+
+## Running SHG tasks
+
+Both **SHG Creation** and **SHG - Geo Checker** work on the rows whose
+`PMIS-Update` cell says `Load`. Type `Load` against the rows you want, run the
+task, and the result replaces it. A row that is not marked `Load` is left alone.
+
+SHG Creation runs in two passes. First it checks every marked name against
+PMIS and writes `SHG Name already exists` for the ones already there; then it
+creates the rest and writes `SHG Created`. Anything else in the cell is the
+error PMIS gave back. The Geo Checker writes `Geo OK`, a near-miss suggestion
+(`Block not found: GHATAGAON -> GHATGAON`), or `No Location`.
 
 ## For colleagues: installing and running
 
@@ -43,7 +55,7 @@ first launch the app copies the template to `PMIS Data.xlsx` for you.
 
 Sheets:
 
-- `Geographical Details` — `State, District, Block, GP, Village, PMIS`
+- `Geographical Details` — `State, District, Block, GP, Village, Hamlet_Name, PMIS` (`Hamlet_Name` optional - blank cells are skipped)
 - `Participant Master Data` — PMIS bulk-upload columns (`fpo_code`, `province`,
   `district`, `block`, `grampanchayat`, `village`, …)
 - `code_book`
@@ -93,15 +105,31 @@ Everything environment-specific lives in [`config.py`](config.py):
 
 ## Layout
 
+A colleague opening the folder sees three things; the code is tucked away.
+
 ```
-app.py         Tkinter UI (readiness, workflow, status, log)
-config.py      All configuration
-deps.py        Dependency checks + in-app pip install/update
-browsers.py    Firefox → Chrome → Edge detection + driver factory
-data_file.py   Locate/open the workbook, detect if it's open in Excel
-pmis_geo.py    Login + AJAX-safe dropdown helpers + GEO automation
-geo_check.py   Participant - Geo Checker
-run.bat        Launcher
+run.bat              Launcher - double-click to start
+PMIS Data.xlsx       The workbook (gitignored: it holds participant PII)
+Read me first.txt    One-page guide for colleagues
+app/
+  app.py             Tkinter UI (readiness, workflow, status, log)
+  logo.py            The steaming-idli mark, drawn in pixels at runtime
+  config.py          All configuration
+  deps.py            Dependency checks + in-app pip install/update
+  browsers.py        Firefox -> Chrome -> Edge detection + driver factory
+  data_file.py       Workbook paths, row reader, open-in-Excel detection
+  pmis_geo.py        Login + AJAX-safe dropdown helpers + GEO automation
+  geo_check.py       Participant - Geo Checker
+  participant.py     Member registration form
+  shg.py             SHG creation + SHG geo checker
+  credstore.py       Windows DPAPI credential storage
+  settings.py        User settings
+  build.bat          Package a shareable ZIP
+  VERSION            Bumped automatically on every commit
+  libs/              App-managed packages (selenium, openpyxl)
+  test_shg.py        Self-checks - python test_shg.py
+  test_geo_cascade.py
+  test_geo_check.py
 ```
 
 ---

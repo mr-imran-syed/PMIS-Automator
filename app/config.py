@@ -50,10 +50,19 @@ ENVIRONMENTS = {
 
 # --- Paths ----------------------------------------------------------------
 def app_dir():
-    """Folder the app lives in (works for a plain script or a frozen build)."""
+    """Where the code and its managed packages live (the 'app' folder)."""
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def home_dir():
+    """The folder the user actually sees: run.bat and the Excel workbook.
+
+    Everything else is tucked inside app/ so a colleague opening the folder
+    is not faced with twenty .py files.
+    """
+    return os.path.dirname(app_dir())
 
 
 def libs_dir():
@@ -62,10 +71,11 @@ def libs_dir():
 
 
 def data_file_path():
-    return os.path.join(app_dir(), DATA_FILE_NAME)
+    return os.path.join(home_dir(), DATA_FILE_NAME)
 
 
 def data_template_path():
+    """Headers-only copy shipped with the code; never holds real data."""
     return os.path.join(app_dir(), DATA_TEMPLATE_NAME)
 
 
@@ -82,6 +92,10 @@ def ensure_libs_on_path():
 # Each maps a dropdown label to the sheet it reads, the column that records
 # progress, the columns it requires, and the runner that performs it.
 # `runner` is a dotted path "module:function" resolved lazily, or None (stub).
+# The participant geo checker writes here, NOT into PMIS-Update: that column
+# is the entry task's done-marker, and the two must not overwrite each other.
+PARTICIPANT_GEO_STATUS_COL = "Geo-Check"
+
 UPDATE_TYPES = {
     "Geographical Details": {
         "sheet": "Geographical Details",
@@ -114,7 +128,7 @@ UPDATE_TYPES = {
     # sheet's cascades against the Create SHG page (and flags hamlets too).
     "SHG - Geo Checker": {
         "sheet": "shg",
-        "status_col": "PMIS-Update",     # not written to; read-only
+        "status_col": "PMIS-Update",     # verdicts are written here
         "required": ["State_Name", "District_Name", "Block_Name",
                      "Grampanchayat_Name", "Village_Name"],
         "runner": "shg:run_shg_geo_check",
@@ -123,13 +137,15 @@ UPDATE_TYPES = {
     # participant sheet actually exists on the Create Member page.
     "Participant - Geo Checker": {
         "sheet": "Participant Master Data",
-        "status_col": "PMIS-Update",     # not written to; this check is read-only
+        # Verdicts go in their OWN column: PMIS-Update is the entry task's
+        # done-marker, and the two tasks must not overwrite each other.
+        "status_col": PARTICIPANT_GEO_STATUS_COL,
         "required": ["fpo_code", "province", "district", "block",
                      "grampanchayat", "village"],
         "runner": "geo_check:run_geo_check",
         # Run on the UI thread before the browser starts; shows a popup and
         # aborts the run if it returns (False, message).
-        "validator": "geo_check:validate_fpo_codes",
+        "validator": "geo_check:validate_geo_rows",
     },
 }
 
@@ -202,11 +218,6 @@ PARTICIPANT_PROGRESS_SELECTORS = [
     "#progressBar", "#progressbar", "#progress-bar",
     ".progress-bar-top", "#top-progress",
 ]
-
-# How long to wait for the bar to show up after clicking Save, and how long to
-# pause once it finishes before touching the form.
-PARTICIPANT_PROGRESS_APPEAR = 1.5
-PARTICIPANT_PROGRESS_SETTLE = 2.0
 
 # After "Save & Continue" the page does a FULL refresh and the dropdowns are
 # repopulated by the new document. That is the trigger for the next entry:
@@ -281,9 +292,16 @@ SHG_CREATE_PATH = "shg/create?type=Shg"   # the OG "Create SHG" link
 SHG_TYPE_ALLOWED = "OG"
 
 SHG_STATUS_COL = "PMIS-Update"
-SHG_DONE_MARKER = "Updated"
-# Written by the SHG geo checker when a cascade is fully valid.
-SHG_GEO_OK_MARKER = "Geo OK"
+SHG_DONE_MARKER = "SHG Created"
+# Only rows carrying this marker are processed - every task that queues work.
+LOAD_MARKER = "Load"
+# Written when a location is missing and nothing in the dropdown is close.
+NO_LOCATION = "No Location"
+# difflib.get_close_matches settings for the "did you mean" suggestions.
+FUZZY_MAX = 3
+FUZZY_CUTOFF = 0.6
+# Written by either geo checker when a cascade is fully valid.
+GEO_OK_MARKER = "Geo OK"
 SHG_DEFAULT_STATUS = "Active"        # the form's GroupStatus dropdown
 
 # Hamlet values that mean "there isn't one" - the field is then left alone.
@@ -291,6 +309,23 @@ SHG_NO_HAMLET_VALUES = {"NO HAMLET", "NA", "NONE", "-"}
 
 # Pause after saving before reading back any validation message.
 SHG_SAVE_SETTLE = 1.0
+# How long to wait for the "Are You Sure?" confirm, and for the save to land.
+SHG_CONFIRM_TIMEOUT = 8
+# The geography cascade must read correct for this long before we trust it.
+# PMIS reloads a dropdown's options when its AJAX reply lands, wiping the
+# selection, and those requests are invisible to Pace - so stability is the
+# only signal that every reply has arrived.
+# Rows marked done before the workbook is written back to disk. Saving an
+# .xlsx costs far more than setting a cell; this is the resume granularity.
+GEO_FLUSH_EVERY = 10
+SHG_FLUSH_EVERY = 10
+
+SHG_CASCADE_SETTLE = 1.5
+SHG_CASCADE_TIMEOUT = 30
+
+# How long to give PMIS's /SHG/IsSHGNameExists duplicate check.
+SHG_NAME_CHECK_TIMEOUT = 8
+SHG_SAVE_TIMEOUT = 45
 
 # Sheet column for each piece of data.
 SHG_COLUMNS = {
@@ -327,8 +362,6 @@ DEPENDENCIES = [
     {"key": "python", "name": "Python", "kind": "python", "mandatory": True},
     {"key": "selenium", "name": "Selenium", "kind": "package",
      "import_name": "selenium", "pip_name": "selenium", "mandatory": True},
-    {"key": "pandas", "name": "pandas", "kind": "package",
-     "import_name": "pandas", "pip_name": "pandas", "mandatory": True},
     {"key": "openpyxl", "name": "openpyxl", "kind": "package",
      "import_name": "openpyxl", "pip_name": "openpyxl", "mandatory": True},
     {"key": "browser", "name": "Web Browser", "kind": "browser",

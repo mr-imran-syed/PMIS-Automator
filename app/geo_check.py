@@ -18,38 +18,65 @@ plain lookup can miss an option that simply has not arrived yet and wrongly
 report an existing location as missing.
 """
 
-import pandas as pd
-
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 
 import config
-from pmis_geo import GeoBot, StopRequested
+import data_file
+from pmis_geo import GeoBot, StopRequested, LEVELS
 
 # The cascade, in order, with the control that selects each on the page.
 # Which SHEET COLUMN feeds each level lives in config.PARTICIPANT_GEO_COLUMNS,
 # so a header rename in the workbook is a one-line change there.
-LEVEL_ORDER = ["State", "District", "Block", "GP", "Village"]
-LEVEL_XPATHS = {
-    "State":    '//select[@name="ProvinceId"]',
-    "District": '//select[@name="DistrictId"]',
-    "Block":    '//select[@name="MunicipalityId"]',
-    "GP":       '//select[@name="GrampanchayatId"]',
-    "Village":  '//select[@name="VillageId"]',
-}
+# Derived from pmis_geo.LEVELS so there is one list of cascade controls.
+LEVEL_XPATHS = {name: f'//select[@name="{sel}"]'
+                for name, _, sel, _ in LEVELS}
+LEVEL_ORDER = [name for name, _, _, _ in LEVELS if name != "Hamlet"]
+
+
+def load_rows_only(rows):
+    """Keep only the rows marked config.LOAD_MARKER in the Geo-Check column.
+
+    Deliberately NOT PMIS-Update: that column is the participant entry task's
+    done-marker, and the two tasks must not overwrite each other.
+    """
+    want = config.LOAD_MARKER.strip().lower()
+    return [r for r in rows
+            if data_file.text(r, config.PARTICIPANT_GEO_STATUS_COL).lower()
+            == want]
+
+
+def cascade_key(rec):
+    """What makes a check unique: the FPO plus the whole cascade."""
+    return tuple(str(rec[c]).strip() for c in ["FPO"] + LEVEL_ORDER)
+
+
+def row_key(row):
+    """cascade_key() for a raw sheet row."""
+    colmap = config.PARTICIPANT_GEO_COLUMNS
+    rec = {"FPO": normalize_fpo(row.get(config.PARTICIPANT_FPO_COLUMN, ""))[0]}
+    rec.update({lvl: data_file.text(row, colmap[lvl]) for lvl in LEVEL_ORDER})
+    return cascade_key(rec)
+
+
+def near_miss(bot, level, value):
+    """Verdict text for a location PMIS does not have, with the near spellings
+    that probably were meant. Shared by both geo checkers."""
+    near = bot.suggest(LEVEL_XPATHS[level], value)
+    if not near:
+        return config.NO_LOCATION
+    return f"{level} not found: {value} -> " + ", ".join(near)
 
 
 def _read_sheet(excel_path, sheet):
-    """Read a sheet WITHOUT pandas' default NaN conversion.
+    """(headers, rows) for a sheet, straight from the cells.
 
-    Critical: pandas treats the literal string "NA" as NaN by default, which
-    would turn a valid fpo_code of "NA" into a blank and wrongly reject it.
-    keep_default_na=False keeps it as the text "NA"; empty cells arrive as ''.
+    Values arrive exactly as written - a literal "NA" fpo_code stays the text
+    "NA" rather than becoming a blank - and each row carries its '_row'.
     """
-    return pd.read_excel(excel_path, sheet_name=sheet,
-                         keep_default_na=False, na_values=[])
+    return data_file.read_rows(excel_path, sheet)
 
 
 # ------------------------------------------------------------- fpo_code
@@ -61,11 +88,6 @@ def normalize_fpo(value):
     """
     if value is None:
         return "", False
-    try:
-        if pd.isna(value):
-            return "", False
-    except (TypeError, ValueError):
-        pass
 
     s = str(value).strip()
     if s == "" or s.lower() in ("nan", "none"):
@@ -77,35 +99,46 @@ def normalize_fpo(value):
     except ValueError:
         return s, False
     if f.is_integer():
-        return str(int(f)), True      # handles pandas' 697.0 -> '697'
+        return str(int(f)), True      # handles a cell holding 697.0
     return s, False
 
 
-def validate_fpo_codes(excel_path, sheet):
+def validate_fpo_codes(excel_path, sheet, only_loaded=False):
     """Pre-flight check run on the UI thread before the browser starts.
 
     Returns (ok, message). When not ok, `message` is shown in a popup.
+    `only_loaded` narrows it to the rows marked Load, so rows the user did
+    not queue cannot block the run.
     """
     col = config.PARTICIPANT_FPO_COLUMN
     try:
-        df = _read_sheet(excel_path, sheet)
+        headers, rows = _read_sheet(excel_path, sheet)
     except Exception as e:
         return False, f"Could not read sheet '{sheet}':\n{e}"
 
-    if col not in df.columns:
+    if col not in headers:
         return False, (f"The sheet '{sheet}' has no '{col}' column.\n\n"
                        f"The Geo Checker needs an FPO code for each row to "
                        f"open the right member page.")
-    if df.empty:
+    if only_loaded:
+        rows = load_rows_only(rows)
+        if not rows:
+            return False, (
+                f"No rows are marked '{config.LOAD_MARKER}' in the "
+                f"'{config.PARTICIPANT_GEO_STATUS_COL}' column of '{sheet}'."
+                f"\n\nType '{config.LOAD_MARKER}' against the rows you want "
+                f"checked, then Start again.")
+    if not rows:
         return False, f"The sheet '{sheet}' has no rows to check."
 
     bad = []
-    for idx, value in df[col].items():
+    for row in rows:
+        value = row.get(col, "")
         _, ok = normalize_fpo(value)
         if not ok:
             shown = "(blank)" if str(value).strip() in ("", "nan", "None") \
                 else repr(value)
-            bad.append((idx + 2, shown))      # +2 -> Excel row incl. header
+            bad.append((row["_row"], shown))
 
     if not bad:
         return True, ""
@@ -117,6 +150,11 @@ def validate_fpo_codes(excel_path, sheet):
         f"'{col}' must be a number (e.g. 697) or \"NA\".\n\n"
         f"{preview}{more}\n\n"
         f"Fix these rows in the data file, then Start again.")
+
+
+def validate_geo_rows(excel_path, sheet):
+    """Validator for the Participant - Geo Checker: Load rows only."""
+    return validate_fpo_codes(excel_path, sheet, only_loaded=True)
 
 
 class GeoChecker(GeoBot):
@@ -212,37 +250,41 @@ class GeoChecker(GeoBot):
         return False
 
     def build_location_df(self, excel_path, sheet):
-        """Unique (fpo_code + location cascade) pairs from the participant sheet.
+        """(sheet rows, unique cascades) for the rows marked Load.
 
         Sheet columns are mapped onto canonical level names via
         config.PARTICIPANT_GEO_COLUMNS, so the rest of the check is insulated
-        from header renames in the workbook.
+        from header renames in the workbook. Every loaded row is kept as well
+        as the deduplicated cascades, so one verdict can be written back to
+        all the rows that share it.
         """
         colmap = config.PARTICIPANT_GEO_COLUMNS      # level -> sheet column
         fpo_col = config.PARTICIPANT_FPO_COLUMN
         wanted = [colmap[lvl] for lvl in LEVEL_ORDER]
 
-        df = _read_sheet(excel_path, sheet)
-        missing = [c for c in [fpo_col] + wanted if c not in df.columns]
+        headers, rows = _read_sheet(excel_path, sheet)
+        missing = [c for c in [fpo_col] + wanted if c not in headers]
         if missing:
             raise ValueError(
                 f"Sheet '{sheet}' is missing column(s): {', '.join(missing)}. "
                 f"The Geo Checker needs: {', '.join([fpo_col] + wanted)}.")
 
-        loc = df[[fpo_col] + wanted].copy()
-        loc.columns = ["FPO"] + LEVEL_ORDER          # canonical names
-        loc["FPO"] = loc["FPO"].map(lambda v: normalize_fpo(v)[0])
-        for c in LEVEL_ORDER:
-            loc[c] = loc[c].astype(str).str.strip()
-        # Drop incomplete rows: no FPO, or any cascade level blank.
-        keep = loc["FPO"] != ""
-        for c in ["District", "Block", "GP", "Village"]:
-            keep &= loc[c] != ""
-        loc = loc[keep]
-        # One row per distinct FPO + full cascade.
-        loc = loc.drop_duplicates(
-            subset=["FPO"] + LEVEL_ORDER).reset_index(drop=True)
-        return loc
+        loaded = load_rows_only(rows)
+        seen, out = set(), []
+        for r in loaded:
+            rec = {"FPO": normalize_fpo(r.get(fpo_col, ""))[0]}
+            rec.update({lvl: data_file.text(r, col)
+                        for lvl, col in zip(LEVEL_ORDER, wanted)})
+            # Drop incomplete rows: no FPO, or any cascade level blank.
+            if not rec["FPO"] or not all(
+                    rec[c] for c in ("District", "Block", "GP", "Village")):
+                continue
+            key = cascade_key(rec)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(rec)
+        return loaded, out
 
     def _dismiss_alert(self, timeout=3):
         """Selecting a village pops an alert on this page; accept it if shown."""
@@ -265,56 +307,85 @@ class GeoChecker(GeoBot):
         return None
 
     def check_locations(self, loc_df, base_url, retry=4):
-        """Check every cascade, one FPO page at a time. Returns unavailable rows."""
-        not_available = []
+        """Check every cascade, one FPO page at a time.
+
+        Returns (unavailable rows, {cascade key: verdict}).
+        """
+        not_available = {}
+        verdicts = {}
         total = len(loc_df)
         done = 0
 
-        for coop_id, group in loc_df.groupby("FPO", sort=False):
+        for coop_id, group in groupby_fpo(loc_df):
             self._check_stop()
             self.log("")
             page_ok = self.goto_fpo_member_page(base_url, coop_id)
 
-            for _, row in group.iterrows():
+            for row in group:
                 self._check_stop()
                 done += 1
                 trail = (f"{row['District']} > {row['Block']} > "
                          f"{row['GP']} > {row['Village']}")
                 self.log(f"#{done}/{total}  [FPO {coop_id}]  {trail}")
 
+                key = cascade_key(row)
                 if not page_ok:
-                    rec = row.to_dict()
+                    rec = dict(row)
                     rec["Missing"] = "FPO page"
-                    not_available.append(rec)
+                    not_available[key] = rec
+                    verdicts[key] = f"FPO page did not load (coopId {coop_id})"
                     self.log("    SKIPPED - member page did not load")
                     continue
 
                 missing_at = self._check_one(row, retry)
                 if missing_at:
-                    self.log(f"    NOT FOUND - {missing_at}: {row[missing_at]}")
-                    rec = row.to_dict()
+                    verdict = near_miss(self, missing_at, row[missing_at])
+                    self.log(f"    NOT FOUND - {verdict}")
+                    rec = dict(row)
                     rec["Missing"] = missing_at
-                    not_available.append(rec)
+                    not_available[key] = rec
+                    verdicts[key] = verdict
                 else:
                     self.log("    ok")
-        return not_available
+                    verdicts[key] = config.GEO_OK_MARKER
+        return not_available, verdicts
+
+
+def groupby_fpo(rows):
+    """(fpo, rows) pairs, each FPO's page loaded once. Order is preserved, so
+    a sheet grouped by FPO stays grouped."""
+    groups = {}
+    for r in rows:
+        groups.setdefault(r["FPO"], []).append(r)
+    return groups.items()
 
 
 def _report(log, loc_df, not_available):
     log("")
     log("=" * 60)
     log(f"Participant - Geo Checker: {len(loc_df)} location(s) checked "
-        f"across {loc_df['FPO'].nunique()} FPO(s)")
+        f"across {len({r['FPO'] for r in loc_df})} FPO(s)")
     if not not_available:
         log("All locations are available in PMIS.")
     else:
         log(f"{len(not_available)} location(s) NOT available:")
-        for m in not_available:
+        for m in not_available.values():
             log(f"  [FPO {m['FPO']}] [missing {m['Missing']}]  "
                 f"{m['District']} > {m['Block']} > {m['GP']} > {m['Village']}")
         log("")
         log("Add the missing entries using 'Geographical Details', then re-run.")
     log("=" * 60)
+
+
+def write_verdicts(excel_path, sheet, rows, verdicts, log=print):
+    """Put each cascade's verdict on every sheet row that shares it."""
+    mapping = {}
+    for r in rows:
+        verdict = verdicts.get(row_key(r))
+        if verdict:
+            mapping[int(r["_row"])] = verdict
+    return data_file.write_column(
+        excel_path, sheet, config.PARTICIPANT_GEO_STATUS_COL, mapping, log)
 
 
 # ---------------------------------------------------------------- runner
@@ -325,18 +396,30 @@ def run_geo_check(driver, excel_path, base_url, username, password,
     bot = GeoChecker(driver, log=log, stop_event=stop_event)
     bot.ensure_logged_in(username, password, base_url)
 
-    loc_df = bot.build_location_df(excel_path, sheet)
-    if loc_df.empty:
-        log("No locations found in the participant sheet - nothing to check.")
+    rows, loc_df = bot.build_location_df(excel_path, sheet)
+    if not loc_df:
+        log(f"No rows marked '{config.LOAD_MARKER}' in "
+            f"'{config.PARTICIPANT_GEO_STATUS_COL}' - nothing to check.")
         return 0
     log(f"{len(loc_df)} location(s) to check across "
-        f"{loc_df['FPO'].nunique()} FPO(s).")
+        f"{len({r['FPO'] for r in loc_df})} FPO(s), "
+        f"from {len(rows)} row(s) marked '{config.LOAD_MARKER}'.")
 
+    verdicts = {}
     try:
-        not_available = bot.check_locations(loc_df, base_url)
+        not_available, verdicts = bot.check_locations(loc_df, base_url)
     except StopRequested:
-        log("Stopped by user - partial check only.")
-        return 0
+        log("Stopped by user - writing the results gathered so far.")
+        not_available = {}
+    except Exception as e:
+        import traceback
+        log(f"ERROR after {len(verdicts)} cascade(s): {e}")
+        log(traceback.format_exc())
+        not_available = {}
+
+    written = write_verdicts(excel_path, sheet, rows, verdicts, log)
+    log(f"Results written to '{config.PARTICIPANT_GEO_STATUS_COL}' for "
+        f"{written} row(s).")
 
     _report(log, loc_df, not_available)
     return len(loc_df)
